@@ -1,0 +1,107 @@
+import streamlit as st
+import requests
+import json
+
+# ------------------- Streamlit Config -------------------
+st.set_page_config(page_title="AI-Powered Exam Generator", layout="wide")
+st.title("📘 AI-Powered Exam Question Generator")
+
+# ------------------- Notes Input -------------------
+st.subheader("Enter your notes (optional upload or paste text)")
+uploaded_file = st.file_uploader("Upload your notes (.txt or .pdf)", type=["txt", "pdf"])
+manual_text = st.text_area("Or paste your notes here", height=200)
+
+file_text = ""
+
+# If file uploaded, read it
+if uploaded_file is not None:
+    if uploaded_file.type == "application/pdf":
+        import PyPDF2
+        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        for page in pdf_reader.pages:
+            text = page.extract_text()
+            if text:
+                file_text += text + "\n"
+    else:
+        file_text = uploaded_file.read().decode("utf-8", errors="ignore")
+
+# If no file, use manual input
+if not file_text:
+    file_text = manual_text
+
+if not file_text.strip():
+    st.warning("Please upload a file or paste some notes to generate questions.")
+else:
+    st.subheader("📄 Preview of Notes")
+    st.text_area("Notes Content", file_text[:2000], height=200)
+
+    # ------------------- Question Type -------------------
+    q_type = st.radio("Select Question Type", ["MCQs", "Short Answers"])
+
+    # ------------------- Generate Questions -------------------
+    if st.button("✨ Generate Questions & Answers"):
+        with st.spinner("Generating... ⏳"):
+            # Fetch Hugging Face token from Streamlit secrets
+            HF_API_TOKEN = st.secrets["HF_API_TOKEN"]
+            HF_MODEL = "tiiuae/falcon-7b-instruct"
+            API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+            headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+
+            # Create prompt depending on question type
+            if q_type == "MCQs":
+                prompt = f"""
+You are an exam writer. From the passage below, generate 3 MCQs in JSON format with model answers and explanations.
+Passage: <<< {file_text[:2000]} >>>
+Format:
+[
+  {{
+    "question": "...",
+    "options": {{"A":"...","B":"...","C":"...","D":"..."}} ,
+    "answer": "...",
+    "explanation": "..."
+  }}
+]
+"""
+            else:  # Short Answers
+                prompt = f"""
+You are an exam writer. From the passage below, generate 3 short-answer questions in JSON with model answers and scoring rubric.
+Passage: <<< {file_text[:2000]} >>>
+Format:
+[
+  {{
+    "question": "...",
+    "model_answer": "...",
+    "rubric": "0/1/2 scoring"
+  }}
+]
+"""
+
+            # Call Hugging Face Inference API
+            response = requests.post(API_URL, headers=headers, json={"inputs": prompt}, timeout=60)
+            out = response.json()
+
+            # Parse API output
+            if isinstance(out, list) and "generated_text" in out[0]:
+                raw_text = out[0]["generated_text"]
+            else:
+                raw_text = str(out)
+
+            try:
+                items = json.loads(raw_text)
+            except:
+                items = [{"raw": raw_text}]
+
+            # ------------------- Display -------------------
+            st.success("✅ Questions & Model Answers Generated!")
+            for idx, item in enumerate(items, 1):
+                st.markdown(f"**Question {idx}:** {item.get('question','')}")
+                if q_type == "MCQs":
+                    options = item.get("options", {})
+                    for opt, val in options.items():
+                        st.markdown(f"- {opt}: {val}")
+                    st.markdown(f"**Answer:** {item.get('answer','')}")
+                    st.markdown(f"**Explanation:** {item.get('explanation','')}")
+                else:
+                    st.markdown(f"**Model Answer:** {item.get('model_answer','')}")
+                    st.markdown(f"**Rubric:** {item.get('rubric','')}")
+                st.markdown("---")
